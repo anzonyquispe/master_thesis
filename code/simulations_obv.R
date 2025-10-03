@@ -7,7 +7,7 @@
 
 rm(list = ls())
 
-setwd("/groups/sgulzar/sa_fires/proj_alterantive/adml_estimations/code/obv_analysis")
+setwd("C:/Users/187697/Documents/GitHub/master_thesis")
 
 library(hdm)
 library(glmnet)
@@ -17,10 +17,10 @@ library(doParallel)
 library(DoubleML)
 library(mlr3)
 library(mlr3learners)
-set.seed(12345)
 
-ncores <- detectCores()-1
-# ncores <- 20
+
+# ncores <- detectCores()-1
+ncores <- 10
 cl     <- makeCluster(ncores)
 registerDoParallel(cl)
 
@@ -31,7 +31,8 @@ registerDoParallel(cl)
 
 ### Generic functions
 
-source("Rfunctions.R")
+source("code/Rfunctions.R")
+source("code/adml_ovb.R")
 
 ### Simulation wrappers
 
@@ -142,7 +143,6 @@ sim_wrapper_main <- function(n,p,k,R2s,nreps){
   return(list(res_bias=res_bias,res_cov=res_cov,res_sd=res_sd,res_leng=res_leng,res_nsel=res_nsel,res_nsel_rel=res_nsel_rel,nna=nna))
   
 }
-
 # Simulations additional DGPs
 sim_wrapper_app <- function(n,p,k,R2s,alpha0,dgp,nreps){
   
@@ -213,8 +213,6 @@ sim_wrapper_app <- function(n,p,k,R2s,alpha0,dgp,nreps){
   return(list(res_bias=res_bias,res_cov=res_cov,res_sd=res_sd,res_leng=res_leng,nna=nna))
   
 }  
-
-
 # Simulations main DGPs (assumes alpha=0 and n/2>p) new one
 restructure_results <- function(res_list) {
   n_outer <- length(res_list)          # 20
@@ -246,19 +244,17 @@ restructure_results <- function(res_list) {
 }
 summarize_rtlist <- function(rtlist, q_95 = qnorm(0.95), alpha= 0) {
   n_mid <- length(rtlist)   # should be 7
-  inner_names <- names(rtlist[[1]])  # e.g. temp_alpha, temp_cov, ...
-  
-  res_bias     <- matrix(NA, n_mid, ncol(rtlist[[1]][["temp_alpha"]]))
-  res_cov      <- matrix(NA, n_mid, ncol(rtlist[[1]][["temp_cov"]]))
-  res_sd       <- matrix(NA, n_mid, ncol(rtlist[[1]][["temp_alpha"]]))
-  res_leng     <- matrix(NA, n_mid, ncol(rtlist[[1]][["temp_leng"]]))
-  res_nsel     <- matrix(NA, n_mid, ncol(rtlist[[1]][["temp_nsel"]]))
-  res_nsel_rel <- matrix(NA, n_mid, ncol(rtlist[[1]][["temp_nsel_rel"]]))
+  ncols = ncol(rtlist[[1]][["temp_alpha"]])
+  res_bias     <- matrix(NA, n_mid, ncols)
+  res_cov      <- matrix(NA, n_mid, ncols)
+  res_sd       <- matrix(NA, n_mid, ncols)
+  res_leng     <- matrix(NA, n_mid, ncols)
+  res_nsel     <- matrix(NA, n_mid, ncols)
+  res_nsel_rel <- matrix(NA, n_mid, ncols)
   nna          <- rep(NA, n_mid)
   
   for (j in seq_len(n_mid)) {
     temp_alpha    <- as.matrix(rtlist[[j]][["temp_alpha"]])-alpha
-    temp_cov      <- as.matrix(rtlist[[j]][["temp_cov"]])
     temp_leng     <- as.matrix(rtlist[[j]][["temp_leng"]])
     tval <-  qnorm(1 - 0.05/2)
     # confidence intervals cell by cell
@@ -271,8 +267,8 @@ summarize_rtlist <- function(rtlist, q_95 = qnorm(0.95), alpha= 0) {
     
     res_bias[j, ]     <- colMeans(abs(temp_alpha), na.rm = TRUE)
     res_cov[j, ]      <- colMeans(temp_cov, na.rm = TRUE)
-    res_sd[j, ]       <- apply(temp_alpha, 2, sd, na.rm = TRUE)
-    res_leng[j, ]     <- 2 * q_95 * colMeans(temp_leng, na.rm = TRUE)
+    res_sd[j, ]       <- apply(temp_alpha,MARGIN=2,FUN=sd,na.rm=TRUE)
+    res_leng[j, ]     <- 2*q_95*colMeans(temp_leng,na.rm=TRUE)
     nna[j]            <- mean(is.na(temp_alpha[, 4]))
     res_nsel[j, ]     <- colMeans(temp_nsel, na.rm = TRUE)
     res_nsel_rel[j, ] <- colMeans(temp_nsel_rel, na.rm = TRUE)
@@ -290,8 +286,9 @@ summarize_rtlist <- function(rtlist, q_95 = qnorm(0.95), alpha= 0) {
 }
 sim_wrapper_main_aux <- function(n,p,k,R2s, seedval = 1, nreps=1){
   
-  set.seed(seedval)
-  q_95 <- qnorm(0.95)
+  
+  alphaval <- 0.05
+  q_95 <- qnorm(1 - alphaval/2)
   r2info <- list()
   for (j in 1:length(R2s)){
     
@@ -301,7 +298,7 @@ sim_wrapper_main_aux <- function(n,p,k,R2s, seedval = 1, nreps=1){
     r <- 1
     # for (r in 1:nreps){
     
-    sim_data <- gen_design(n,p,k,R2,R2,alpha0=4,dgp="homosc")
+    sim_data <- gen_design(n,p,k,R2,R2,alpha0=4,dgp="homosc", seedval = seedval)
     
     y <- sim_data$y
     d <- sim_data$d
@@ -356,45 +353,39 @@ sim_wrapper_main_aux <- function(n,p,k,R2s, seedval = 1, nreps=1){
     temp_nsel[r,6]      <- sum(pdl_bcch15$selection.index)
     temp_nsel_rel[r,6]  <- sum(pdl_bcch15$selection.index[1:k])
     
-    db_min           <- db_cv(y,d,X,cv="min")
-    temp_alpha[r,7]  <- db_min$alpha_hat
-    temp_cov[r,7]    <- (abs(db_min$alpha_hat/db_min$se_hat)<=q_95)
-    temp_leng[r,7]   <- db_min$se_hat      
+    db_min              <- db_cv(y,d,X,cv="min")
+    temp_alpha[r,7]     <- db_min$alpha_hat
+    temp_cov[r,7]       <- (abs(db_min$alpha_hat/db_min$se_hat)<=q_95)
+    temp_leng[r,7]      <- db_min$se_hat      
     
-    db_1se           <- db_cv(y,d,X,cv="1se")
-    temp_alpha[r,8]  <- db_1se$alpha_hat
-    temp_cov[r,8]    <- (abs(db_1se$alpha_hat/db_1se$se_hat)<=q_95)
-    temp_leng[r,8]   <- db_1se$se_hat
+    db_1se              <- db_cv(y,d,X,cv="1se")
+    temp_alpha[r,8]     <- db_1se$alpha_hat
+    temp_cov[r,8]       <- (abs(db_1se$alpha_hat/db_1se$se_hat)<=q_95)
+    temp_leng[r,8]      <- db_1se$se_hat
 
     
     learner = lrn("regr.cv_glmnet", s="lambda.min")
+    dml_data_sim = double_ml_data_from_matrix(X=X, y=y, d=d)
     ml_l_sim = learner$clone()
     ml_m_sim = learner$clone()
     obj_dml_plr_sim = DoubleMLPLR$new(dml_data_sim, ml_l=ml_l_sim, ml_m=ml_m_sim)
     obj_dml_plr_sim$fit()
     
     temp_alpha[r,9]     <- obj_dml_plr_sim$all_coef
-    temp_cov[r,9]       <- (abs(obj_dml_plr_bonus$all_coef/obj_dml_plr_sim$all_se)<=q_95)
+    temp_cov[r,9]       <- (abs(obj_dml_plr_sim$all_coef/obj_dml_plr_sim$all_se)<=q_95)
     temp_leng[r,9]      <- obj_dml_plr_sim$all_se
     
-    
-    # }
-    
-    
+    adml.res <- adml.lasso( sim_data )
+    temp_alpha[r,10]     <- adml.res$coef
+    temp_cov[r,10]       <- (abs(adml.res$coef/adml.res$se)<=q_95)
+    temp_leng[r,10]      <- adml.res$se
     
     r2info[[j]] <- list(temp_alpha=temp_alpha,
-                        temp_cov=temp_cov,
-                        temp_leng=temp_leng,
+                        temp_leng=temp_leng ,
                         temp_nsel=temp_nsel,
                         temp_nsel_rel=temp_nsel_rel)
-    
   }
   return(r2info)
-  # 
-  # return(list(res_bias=res_bias,res_cov=res_cov,
-  #             res_sd=res_sd,res_leng=res_leng,
-  #             res_nsel=res_nsel,res_nsel_rel=res_nsel_rel,nna=nna))
-  # 
 }
 
 
@@ -406,17 +397,18 @@ sim_wrapper_main_aux <- function(n,p,k,R2s, seedval = 1, nreps=1){
 # Simulations
 ######################################################################################################
 
-### Setup
+### Setup 
 
-nreps <- 1000
-R2s       <- c(0.01,0.05,0.1,0.2,0.3,0.4,0.5, 0.6,0.7)
+nreps <- 20
+R2s       <- 1-c(0.01,0.05,0.1,0.2,0.3,0.4,0.5)
 R2s_bern  <- R2s
 
 ### Main text
 a <- Sys.time()
 res_list <- foreach(b = 1:nreps,
-                    .packages = c("hdm", "glmnet", "sandwich", "DoubleML", "mlr3", "mlr3learners")
-) %dopar% {
+                    .packages = c("hdm", "glmnet", "sandwich", "DoubleML", "mlr3", "mlr3learners", 
+                                  "foreign", "dplyr", "ggplot2", "quantreg", 
+                                  "randomForest", "keras", "data.table"))  %dopar% {
   sim_wrapper_main_aux(n=500,p=200,k=5,R2s=R2s, seedval = b)
 }
 dgp_m1 <- summarize_rtlist( restructure_results( res_list ), alpha =4 )
@@ -450,6 +442,12 @@ saveRDS(dgp_m1, file = "dgp_m1.rds")
 saveRDS(dgp_m2, file = "dgp_m2.rds")
 saveRDS(dgp_m3, file = "dgp_m3.rds")
 
+######################################################################################################
+
+
+
+################################################################################
+############################## Importing Results ###############################
 
 dgp_m1 <- readRDS("C:/Users/187697/Dropbox/data_eco/Udesa/mater_thesis/data/dgp_m2.rds")
 dgp_m1
@@ -535,7 +533,7 @@ dev.off()
 
 
 png("C:/Users/187697/Dropbox/data_eco/Udesa/mater_thesis/output/bias_plot.png", width=800, height=600, res=120)
-plot(range(R2s), c(0.01,0.05),
+plot(range(R2s), c(0.0,0.05),
      ylab="Bias",
      xlab=expression(R^{2}),
      main="p=200, k=5",
@@ -551,6 +549,11 @@ lines(R2s, dgp_m1$res_bias[,10], type="b", pch=1, lwd=3, col="red")
 lines(R2s, dgp_m2$res_bias[,10], type="b", pch=2, lwd=3, col="red")
 lines(R2s, dgp_m3$res_bias[,10], type="b", pch=3, lwd=3, col="red")
 
+# Last 3 lines (red)
+lines(R2s, dgp_m1$res_bias[,9], type="b", pch=1, lwd=3, col="black")
+lines(R2s, dgp_m2$res_bias[,9], type="b", pch=2, lwd=3, col="black")
+lines(R2s, dgp_m3$res_bias[,9], type="b", pch=3, lwd=3, col="black")
+
 lines(R2s, dgp_m1$res_bias[,2], type="b", pch=1, lwd=3, col="green")
 lines(R2s, dgp_m2$res_bias[,2], type="b", pch=2, lwd=3, col="green")
 lines(R2s, dgp_m3$res_bias[,2], type="b", pch=3, lwd=3, col="green")
@@ -561,8 +564,8 @@ legend("topright",
        pch=c(1, 2, 3),
        bty="n")
 legend("topleft",
-       legend=c("OLS", "DML Lasso", "Double Lasso"),
-       col=c("blue", "red", "green"),
+       legend=c("OLS",  "DML", "ADML",  "Double Lasso"),
+       col=c("blue", "black", "red", "green"),
        lwd=3,
        bty="n")
 dev.off()

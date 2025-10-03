@@ -7,11 +7,35 @@
 
 ### Generate data with pre-specified R2
 
-gen_design <- function(n,p,k,RsqY,RsqD,alpha0,dgp="homosc"){
+gen_design <- function(n,p,k,RsqY,RsqD,alpha0,dgp="homosc", seedval = 1){
   
+  set.seed(seedval)
   tbeta <- tgamma <- rep(0,p)
   tbeta[1:k] <- tgamma[1:k] <- 1
   
+  # Homoscedastic dgp; allows alpha0!=0
+  # if(dgp=="homosc"){
+  #   
+  #   cD <- sqrt(RsqD/(k-RsqD*k))
+  #   
+  #   if (alpha0==0){
+  #     cY <- sqrt(RsqY/(k-RsqY*k))
+  #   }
+  #   if (alpha0!=0){
+  #     a   <- k*(RsqY-1)
+  #     b   <- 2*alpha0*cD*k*(RsqY-1)
+  #     c   <- alpha0^2*cD^2*k*(RsqY-1)+(alpha0^2+1)*RsqY
+  #     cY  <- max(Re(polyroot(c(c,b,a))))
+  #   }
+  # 
+  #   gamma <-  cD*tgamma
+  #   beta  <-  cY*tbeta
+  #   
+  #   X <- matrix(rnorm(n*p),n,p)
+  #   d <- probit(X%*%gamma) + rnorm(n)
+  #   y <- alpha0*d + X%*%beta + rnorm(n)
+  #   
+  # }
   # Homoscedastic dgp; allows alpha0!=0
   if(dgp=="homosc"){
     
@@ -26,14 +50,29 @@ gen_design <- function(n,p,k,RsqY,RsqD,alpha0,dgp="homosc"){
       c   <- alpha0^2*cD^2*k*(RsqY-1)+(alpha0^2+1)*RsqY
       cY  <- max(Re(polyroot(c(c,b,a))))
     }
-
+    
     gamma <-  cD*tgamma
     beta  <-  cY*tbeta
     
     X <- matrix(rnorm(n*p),n,p)
-    d <- X%*%gamma + rnorm(n)
-    y <- alpha0*d + X%*%beta + rnorm(n)
+    X <- matrix(rnorm(n*p), n, p)
     
+    eta <- as.numeric(X %*% gamma)
+    
+    # choose target prevalence:
+    pi_target <- 0.5  # change to 0.3, 0.6, etc.
+    
+    # find delta so that mean(plogis(eta + delta)) ~= pi_target
+    f <- function(delta) mean(plogis(eta + delta)) - pi_target
+    delta <- uniroot(f, c(-15, 15))$root
+    
+    p <- plogis(eta + delta)
+    d <- rbinom(n, size = 1, prob = p)
+    
+    # outcome
+    cY   <- sqrt(RsqY/(k - RsqY*k))
+    beta <- cY * tbeta
+    y <- alpha0 * d + as.numeric(X %*% beta) + rnorm(n)
   }
   
   # Heteroscedastic dgp; designed for alpha0=0
@@ -234,6 +273,47 @@ dml_lasso_cf_once <- function(y, d, X, K = 5, cv_rule = c("min", "1se"), seed = 
   )
 }
 
+reg_hck <- function(y, d, X) {
+  
+  n  <- length(y)
+  Xc <- cbind(1, X)
+  dXc <- cbind(1, d, X)
+  
+  # First stage: d ~ X
+  XXinv <- chol2inv(chol(crossprod(Xc)))
+  b_d   <- XXinv %*% crossprod(Xc, d)
+  res_d <- drop(d - Xc %*% b_d)
+  
+  # Second stage: y ~ d + X
+  dXXinv <- chol2inv(chol(crossprod(dXc)))
+  b_y    <- dXXinv %*% crossprod(dXc, y)
+  res_y  <- drop(y - dXc %*% b_y)
+  
+  # Projection matrix P = Xc (Xc'Xc)^{-1} Xc'
+  # Build as sparse
+  P <- Xc %*% XXinv %*% t(Xc)
+  P <- Matrix(P, sparse = TRUE)
+  
+  # M = I - P
+  M <- Diagonal(n) - P
+  
+  # Elementwise square of M (still sparse!)
+  MM <- M * M
+  
+  # Solve (MM) z = res_y^2 efficiently
+  rhs <- res_y^2
+  z   <- solve(MM, rhs, sparse = TRUE)
+  
+  # Now compute Sig
+  Sig <- (1/n) * crossprod(res_d^2, z)
+  
+  Gam <- mean(res_d^2)
+  alpha_hat <- b_y[2]
+  se_hat    <- sqrt((1 / Gam^2) * (Sig / n))
+  return(c(alpha_hat,se_hat))
+}
+
+
 
 
 
@@ -241,28 +321,28 @@ dml_lasso_cf_once <- function(y, d, X, K = 5, cv_rule = c("min", "1se"), seed = 
 ### OLS with HCK standard errors (Cattaneo et al. (2018);
 # Code is partly based on the replication material available here: https://github.com/mdcattaneo/replication-CJN_2018_JASA
 
-reg_hck <- function(y,d,X){
-  
-  n <- length(y)
-  
-  Xc    <- cbind(1,X)
-  dXc   <- cbind(1,d,X)
-  
-  b_d   <- chol2inv(chol(crossprod(Xc)))%*%crossprod(Xc,d)
-  res_d <- d - Xc %*% b_d
-  b_y   <- chol2inv(chol(crossprod(dXc)))%*%crossprod(dXc,y)
-  res_y <- y - dXc %*% b_y
-  
-  M     <- diag(rep(n,1))-Xc%*%chol2inv(chol(crossprod(Xc)))%*%t(Xc)
-  Sig   <- (1/n)*t(res_d^2) %*% (chol2inv(chol(M*M)))%*%res_y^2
-  Gam   <- mean(res_d^2)
-  
-  alpha_hat <- b_y[2]
-  se_hat    <- sqrt((1/Gam^2)*(Sig/n))
-  
-  return(c(alpha_hat,se_hat))
-  
-}
+# reg_hck <- function(y,d,X){
+#   
+#   n <- length(y)
+#   
+#   Xc    <- cbind(1,X)
+#   dXc   <- cbind(1,d,X)
+#   
+#   b_d   <- chol2inv(chol(crossprod(Xc)))%*%crossprod(Xc,d)
+#   res_d <- d - Xc %*% b_d
+#   b_y   <- chol2inv(chol(crossprod(dXc)))%*%crossprod(dXc,y)
+#   res_y <- y - dXc %*% b_y
+#   
+#   M     <- diag(rep(n,1))-Xc%*%chol2inv(chol(crossprod(Xc)))%*%t(Xc)
+#   Sig   <- (1/n)*t(res_d^2) %*% (chol2inv(chol(M*M)))%*%res_y^2
+#   Gam   <- mean(res_d^2)
+#   
+#   alpha_hat <- b_y[2]
+#   se_hat    <- sqrt((1/Gam^2)*(Sig/n))
+#   
+#   return(c(alpha_hat,se_hat))
+#   
+# }
 
 ### OLS with robust standard errors
 
