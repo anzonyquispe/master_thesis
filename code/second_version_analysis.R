@@ -597,9 +597,19 @@ RMD_stable<-function(args,type,Y,X,p0,D_LB,D_add,max_iter,b,is_alpha = TRUE,is_l
   }
 }
 
-arg_Forest<- list(clas_nodesize=1, reg_nodesize=5, ntree=1000, na.action=na.omit, replace=TRUE)
-arg_Nnet<- list(size=8,  maxit=1000, decay=0.01, MaxNWts=10000,  trace=FALSE)
+# # arg_Forest<- list(clas_nodesize=1, reg_nodesize=5, ntree=100, na.action=na.omit, replace=TRUE)
+# arg_Forest <- list(
+#   clas_nodesize = 5,              # larger node size = shallower trees = faster
+#   reg_nodesize  = 10,
+#   ntree         = 50,             # fewer trees
+#   na.action     = na.omit,
+#   replace       = FALSE,          # subsampling without replacement is faster
+#   max.depth     = 10              # limit depth of trees
+# )
 
+# arg_Nnet<- list(size=8,  maxit=1000, decay=0.01, MaxNWts=200,  trace=FALSE)
+arg_Forest<- list(clas_nodesize=1, reg_nodesize=5, ntree=1000, na.action=na.omit, replace=TRUE)
+arg_Nnet <- list(size=8, maxit=1000, decay=0.01, MaxNWts=10000, trace=FALSE)
 
 get_stage1<-function(args,type,Y,X,p0,D_LB,D_add,max_iter,b,alpha_estimator = 1,gamma_estimator = 1){
   ###Inputs
@@ -1048,7 +1058,10 @@ for (quintile in 0:0){ #change "0:5" to "0:0" if you just want to run once on wh
   results<-rrr(args,type,Y,X,p0,D_LB,D_add,max_iter,dict,alpha_estimator,gamma_estimator,bias)
   printer(results,type)
   
-  
+  # ate.adml 
+  # 0.02653029
+  # se.adml 
+  # 0.007512747
 }
 
 
@@ -1058,7 +1071,7 @@ gamma_estimator=2
 bias=0
 results2<-rrr(args,type,Y,X,p0,D_LB,D_add,max_iter,dict,alpha_estimator,gamma_estimator,bias)
 # -0.0348 - (0.0052)
-
+# 1.694608e-03  3.761022e-03
 
 set.seed(1) # for sample splitting
 alpha_estimator=1
@@ -1076,28 +1089,188 @@ results4<-rrr(args,type,Y,X,p0,D_LB,D_add,max_iter,dict,alpha_estimator,gamma_es
 # 0.0275407403116969 (0.0059)
 
 
+set.seed(1) # Random Fores
+alpha_estimator=1
+gamma_estimator=1
+bias=0
+results<-rrr(args,type,Y,X,p0,D_LB,D_add,max_iter,dict,alpha_estimator,gamma_estimator,bias)
+#################### Argentina #################################################
 
-# 
-# df  <- read.dta("sipp1991.dta")
-# Y <- df[,"net_tfa"]
-# D <- df[,"e401"]
-# X.L <- cbind(df[,"age"], df[,"inc"], df[,"educ"], df[,"fsize"], df[,"marr"], df[,"twoearn"], df[,"db"], df[,"pira"], df[,"hown"])
-# 
-# X <- scale(X.L,center=TRUE,scale=TRUE) #Centers and scales X
-# #Impose common support. More discussion in Appendix B.
-# p.1 <- multinom(D~X-1, trace=FALSE)$fitted.values
-# indexes.to.drop <- which(p.1 < min(p.1[D==1]) | max(p.1[D==1]) < p.1)
-# 
-# probs = data.frame("treatment" = append(rep("Treated",length(p.1[D==1])),rep("Untreated",length(p.1[D==0]))),"value" = append(p.1[D==1],p.1[D==0]))  
-# 
-# ggplot(probs,aes(x = value, fill = treatment))+
-#   geom_histogram(alpha = 0.2, col = "black")+
-#   geom_vline(xintercept = min(p.1[D==1]),linetype = "dotted")+
-#   geom_vline(xintercept = max(p.1[D==1]),linetype = "dotted")
-# 
-# probs %>%
-#   filter(value<=0.25)%>%
-#   ggplot(aes(x = value, fill = treatment))+
-#   geom_histogram(alpha = 0.2, col = "black")+
-#   geom_vline(xintercept = min(p.1[D==1]))
-# 
+library(DoubleML)
+library(mlr3)
+library(mlr3learners)
+df  <- fread("data/argentina2check.csv") 
+learner = lrn("regr.cv_glmnet", s="lambda.min")
+X=df[, 3:ncol(df)] %>% select(-c(estimated_occupancy_l365d, estimated_revenue_l365d))
+dml_data_sim = double_ml_data_from_matrix(X=X, y=df$pricelog, d=df$host_is_superhost)
+ml_l_sim = learner$clone()
+ml_m_sim = learner$clone()
+obj_dml_plr_sim = DoubleMLPLR$new(dml_data_sim, ml_l=ml_l_sim, ml_m=ml_m_sim)
+obj_dml_plr_sim$fit()
+
+dml.coef.ar     <- obj_dml_plr_sim$all_coef
+dml.se.ar       <- obj_dml_plr_sim$all_se
+
+
+### ADML AR
+quintile=0 #comment out this line to iterate through quintiles
+df  <- fread("data/argentina2check.csv") %>% select(-c(estimated_occupancy_l365d, estimated_revenue_l365d))
+maxp = ncol(df)
+spec=1 #spec in (1-3)
+quintile=0 #quintile in (1-5). 0 means all quintiles
+data<-get_data(df,spec,quintile) #trimming like Farrell; different than Chernozhukov et al. 
+Y=data[[1]]
+T=data[[2]]
+X=data[[3]] #no intercept
+dict=b # b for partially linear model, b2 for interacted model. note that b2 appears in stage1.R for NN
+p=length(b(T[1],X[1,]))
+args = list(T = T)
+p0=ceiling(p/4) 
+if (p>60){
+  p0=ceiling(p/40)
+  
+}
+D_LB=0 #each diagonal entry of \hat{D} lower bounded by D_LB
+D_add=.2 #each diagonal entry of \hat{D} increased by D_add. 0.1 for 0, 0,.2 otw
+max_iter=10 #max number iterations in Dantzig selector iteration over estimation and weights
+set.seed(1) # for sample splitting
+alpha_estimator=1
+gamma_estimator=1
+bias=0 #0 for unbiased or 1 for biased
+results.adml.ar <-rrr(args,type,Y,X,p0,D_LB,D_add,max_iter,dict,alpha_estimator,gamma_estimator,bias)
+
+
+#################### Brazil ###################################################3
+
+learner = lrn("regr.cv_glmnet", s="lambda.min")
+df <- fread('data/brazil24012025.csv')
+X=df[, 3:ncol(df)] %>% select(-c(estimated_occupancy_l365d, estimated_revenue_l365d))
+dml_data_sim = double_ml_data_from_matrix(X=X, y=df$pricelog, d=df$host_is_superhost)
+ml_l_sim = learner$clone()
+ml_m_sim = learner$clone()
+obj_dml_plr_sim = DoubleMLPLR$new(dml_data_sim, ml_l=ml_l_sim, ml_m=ml_m_sim)
+obj_dml_plr_sim$fit()
+
+dml.coef.br     <- obj_dml_plr_sim$all_coef
+dml.se.br       <- obj_dml_plr_sim$all_se
+print(paste(dml.coef, dml.se))
+
+### ADML Brazil
+quintile=0 #comment out this line to iterate through quintiles
+df  <- fread("data/brazil24012025.csv") %>% select(-c(estimated_occupancy_l365d, estimated_revenue_l365d))
+maxp = ncol(df)
+spec=1 #spec in (1-3)
+quintile=0 #quintile in (1-5). 0 means all quintiles
+data<-get_data(df,spec,quintile) #trimming like Farrell; different than Chernozhukov et al. 
+Y=data[[1]]
+T=data[[2]]
+X=data[[3]] #no intercept
+dict=b # b for partially linear model, b2 for interacted model. note that b2 appears in stage1.R for NN
+p=length(b(T[1],X[1,]))
+args = list(T = T)
+p0=ceiling(p/4) 
+if (p>60){
+  p0=ceiling(p/40)
+  
+}
+D_LB=0 #each diagonal entry of \hat{D} lower bounded by D_LB
+D_add=.2 #each diagonal entry of \hat{D} increased by D_add. 0.1 for 0, 0,.2 otw
+max_iter=10 #max number iterations in Dantzig selector iteration over estimation and weights
+set.seed(1) # for sample splitting
+alpha_estimator=1
+gamma_estimator=1
+bias=0 #0 for unbiased or 1 for biased
+results.adml.br <-rrr(args,type,Y,X,p0,D_LB,D_add,max_iter,dict,alpha_estimator,gamma_estimator,bias)
+
+
+
+
+
+#################### Mexico ###################################################3
+learner = lrn("regr.cv_glmnet", s="lambda.min")
+df <- fread('data/mexico25012025.csv')
+X=df[, 3:ncol(df)] %>% select(-c(estimated_occupancy_l365d, estimated_revenue_l365d))
+dml_data_sim = double_ml_data_from_matrix(X=X, y=df$pricelog, d=df$host_is_superhost)
+ml_l_sim = learner$clone()
+ml_m_sim = learner$clone()
+obj_dml_plr_sim = DoubleMLPLR$new(dml_data_sim, ml_l=ml_l_sim, ml_m=ml_m_sim)
+obj_dml_plr_sim$fit()
+
+dml.coef.mx     <- obj_dml_plr_sim$all_coef
+dml.se.mx       <- obj_dml_plr_sim$all_se
+
+### ADML Mexico
+quintile=0 #comment out this line to iterate through quintiles
+df  <- fread("data/mexico25012025.csv") %>% select(-c(estimated_occupancy_l365d, estimated_revenue_l365d))
+maxp = ncol(df)
+spec=1 #spec in (1-3)
+quintile=0 #quintile in (1-5). 0 means all quintiles
+data<-get_data(df,spec,quintile) #trimming like Farrell; different than Chernozhukov et al. 
+Y=data[[1]]
+T=data[[2]]
+X=data[[3]] #no intercept
+dict=b # b for partially linear model, b2 for interacted model. note that b2 appears in stage1.R for NN
+p=length(b(T[1],X[1,]))
+args = list(T = T)
+p0=ceiling(p/4) 
+if (p>60){
+  p0=ceiling(p/40)
+  
+}
+D_LB=0 #each diagonal entry of \hat{D} lower bounded by D_LB
+D_add=.2 #each diagonal entry of \hat{D} increased by D_add. 0.1 for 0, 0,.2 otw
+max_iter=10 #max number iterations in Dantzig selector iteration over estimation and weights
+set.seed(1) # for sample splitting
+alpha_estimator=1
+gamma_estimator=1
+bias=0 #0 for unbiased or 1 for biased
+results.adml.mx <-rrr(args,type,Y,X,p0,D_LB,D_add,max_iter,dict,alpha_estimator,gamma_estimator,bias)
+
+
+
+
+
+#################### NY ###################################################3
+learner = lrn("regr.cv_glmnet", s="lambda.min")
+df <- fread('data/newyork01032025.csv')
+X=df[, 3:ncol(df)] %>% select(-c(estimated_occupancy_l365d, estimated_revenue_l365d))
+dml_data_sim = double_ml_data_from_matrix(X=X, y=df$pricelog, d=df$host_is_superhost)
+ml_l_sim = learner$clone()
+ml_m_sim = learner$clone()
+obj_dml_plr_sim = DoubleMLPLR$new(dml_data_sim, ml_l=ml_l_sim, ml_m=ml_m_sim)
+obj_dml_plr_sim$fit()
+
+dml.coef.ny     <- obj_dml_plr_sim$all_coef
+dml.se.ny       <- obj_dml_plr_sim$all_se
+### ADML NY
+quintile=0 #comment out this line to iterate through quintiles
+df  <- fread("data/newyork01032025.csv")
+maxp = ncol(df)
+spec=1 #spec in (1-3)
+quintile=0 #quintile in (1-5). 0 means all quintiles
+data<-get_data(df,spec,quintile) #trimming like Farrell; different than Chernozhukov et al. 
+Y=data[[1]]
+T=data[[2]]
+X=data[[3]] #no intercept
+dict=b # b for partially linear model, b2 for interacted model. note that b2 appears in stage1.R for NN
+p=length(b(T[1],X[1,]))
+args = list(T = T)
+p0=ceiling(p/4) 
+if (p>60){
+  p0=ceiling(p/40)
+  
+}
+D_LB=0 #each diagonal entry of \hat{D} lower bounded by D_LB
+D_add=.2 #each diagonal entry of \hat{D} increased by D_add. 0.1 for 0, 0,.2 otw
+max_iter=10 #max number iterations in Dantzig selector iteration over estimation and weights
+set.seed(1) # for sample splitting
+alpha_estimator=1
+gamma_estimator=1
+bias=0 #0 for unbiased or 1 for biased
+results.adml.ny <-rrr(args,type,Y,X,p0,D_LB,D_add,max_iter,dict,alpha_estimator,gamma_estimator,bias)
+
+
+
+
+
+
